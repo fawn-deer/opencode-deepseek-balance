@@ -53,12 +53,9 @@ export async function readApiKey(stateDir: string, providerID: string): Promise<
  *
  * 背景：opencode 把 `auth.json` 放在**数据目录**
  * （`$XDG_DATA_HOME/opencode`，未设置时回退 `~/.local/share/opencode`），
- * 而 TUI 插件 API 只暴露**状态目录** `api.state.path.state`。
- * 因此这里把两个目录都列出来逐一尝试。
- *
- * @param stateDir TUI 暴露的状态目录（`api.state.path.state`）。
+ * 早期版本也可能出现在状态目录，因此一并作为回退。
  */
-export function defaultAuthDirs(stateDir: string): string[] {
+export function defaultAuthDirs(): string[] {
   const dirs: string[] = []
 
   const xdgData = process.env.XDG_DATA_HOME?.trim()
@@ -66,7 +63,6 @@ export function defaultAuthDirs(stateDir: string): string[] {
 
   dirs.push(path.join(os.homedir(), ".local", "share", "opencode"))
   dirs.push(path.join(os.homedir(), ".local", "state", "opencode"))
-  dirs.push(stateDir)
 
   return [...new Set(dirs)]
 }

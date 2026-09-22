@@ -1,14 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import type { TuiPluginApi, TuiPluginMeta } from "@opencode-ai/plugin/tui"
+import type { Context } from "@opencode/plugin/tui/context"
 import plugin from "../src/tui"
 import { displayText } from "../src/view"
 import { resolveOptions } from "../src/options"
 import { createBalanceStore } from "../src/store"
 import type { BalanceResponse } from "../src/balance"
-
-const meta = {} as TuiPluginMeta
-
-type Registration = { order?: number; slots: Record<string, unknown> }
 
 const okBody: BalanceResponse = {
   is_available: true,
@@ -17,56 +13,89 @@ const okBody: BalanceResponse = {
   ],
 }
 
-function fakeApi() {
-  const registrations: Registration[] = []
-  const disposers: Array<() => void | Promise<void>> = []
+type Claim = { append?: string; prepend?: string; before?: string; after?: string; replace?: string }
 
-  const api = {
-    state: {
-      path: { state: "/tmp/opencode-deepseek-balance-missing" },
-      config: { model: "deepseek/deepseek-chat" },
-      session: { messages: () => [] },
-    },
-    route: { current: { name: "home" } },
-    event: { on: () => () => {} },
-    lifecycle: { onDispose: (fn: () => void | Promise<void>) => disposers.push(fn) },
-    slots: {
-      register: (registration: Registration) => {
-        registrations.push(registration)
-        return "deepseek-balance"
+function fakeContext(models: { providerID: string; id: string } | null = { providerID: "deepseek", id: "deepseek-chat" }) {
+  const claims: Claim[] = []
+  let subscriptions = 0
+  let unsubscribes = 0
+  let slotUnregisters = 0
+
+  const context = {
+    options: {},
+    client: {
+      model: {
+        default: async () => ({ location: {}, data: models }),
       },
     },
-    theme: { current: {} },
+    data: {
+      session: { get: () => undefined },
+      on: (_type: string, _handler: unknown) => {
+        subscriptions += 1
+        return () => {
+          unsubscribes += 1
+        }
+      },
+    },
+    ui: {
+      router: { current: () => ({ type: "home" }) },
+      slot: (claim: Claim) => {
+        claims.push(claim)
+        return () => {
+          slotUnregisters += 1
+        }
+      },
+    },
+    theme: {
+      text: {
+        base: {},
+        muted: {},
+        feedback: {
+          success: { base: {} },
+          warning: { base: {} },
+          error: { base: {} },
+          info: { base: {} },
+        },
+      },
+    },
   }
 
-  return { api: api as unknown as TuiPluginApi, registrations, disposers }
+  return {
+    context: context as unknown as Context,
+    claims,
+    stats: () => ({ subscriptions, unsubscribes, slotUnregisters }),
+  }
 }
 
 describe("deepseek-balance tui plugin", () => {
-  test("exports a valid tui plugin module", () => {
+  test("exports a v2 plugin definition", () => {
     expect(plugin.id).toBe("deepseek-balance")
-    expect(typeof plugin.tui).toBe("function")
+    expect(typeof plugin.setup).toBe("function")
   })
 
-  test("registers the sidebar, session prompt and home prompt slots", async () => {
-    const { api, registrations } = fakeApi()
+  test("registers the sidebar, prompt footer and home footer slots", async () => {
+    const { context, claims } = fakeContext()
 
-    await plugin.tui(api, {}, meta)
+    const cleanup = await plugin.setup(context)
 
-    const names = registrations.flatMap((item) => Object.keys(item.slots))
-    expect(names).toContain("sidebar_content")
-    expect(names).toContain("session_prompt_right")
-    expect(names).toContain("home_prompt_right")
-    expect(registrations.find((item) => "sidebar_content" in item.slots)?.order).toBe(101)
+    const paths = claims.map((claim) => claim.append)
+    expect(paths).toContain("sidebar.content")
+    expect(paths).toContain("prompt.footer.status")
+    expect(paths).toContain("home.footer.status")
+
+    expect(typeof cleanup).toBe("function")
+    cleanup?.()
   })
 
-  test("registers a lifecycle disposer", async () => {
-    const { api, disposers } = fakeApi()
+  test("subscribes events and disposes them on cleanup", async () => {
+    const { context, stats } = fakeContext()
 
-    await plugin.tui(api, {}, meta)
+    const cleanup = await plugin.setup(context)
+    expect(stats().subscriptions).toBeGreaterThan(0)
 
-    expect(disposers.length).toBeGreaterThan(0)
-    for (const dispose of disposers) await dispose()
+    cleanup?.()
+    expect(stats().unsubscribes).toBe(stats().subscriptions)
+    expect(stats().slotUnregisters).toBe(3)
   })
 })
 

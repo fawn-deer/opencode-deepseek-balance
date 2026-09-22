@@ -53,17 +53,16 @@ describe("defaultAuthDirs", () => {
     const previous = process.env.XDG_DATA_HOME
     process.env.XDG_DATA_HOME = "/custom/data"
     try {
-      expect(defaultAuthDirs("/state/opencode")).toContain("/custom/data/opencode")
+      expect(defaultAuthDirs()).toContain("/custom/data/opencode")
     } finally {
       if (previous === undefined) delete process.env.XDG_DATA_HOME
       else process.env.XDG_DATA_HOME = previous
     }
   })
 
-  test("includes the default data dir and the given state dir", () => {
-    const dirs = defaultAuthDirs("/state/opencode")
+  test("includes the default data dir", () => {
+    const dirs = defaultAuthDirs()
     expect(dirs).toContain(path.join(os.homedir(), ".local", "share", "opencode"))
-    expect(dirs).toContain("/state/opencode")
   })
 })
 

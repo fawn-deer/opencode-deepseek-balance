@@ -1,9 +1,9 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { Context } from "@opencode/plugin/tui/context"
 import type { RGBA } from "@opentui/core"
 import { createEffect, createMemo, type Accessor } from "solid-js"
 import { formatBalances } from "./format"
-import { currentProviderID, homeProviderID } from "./provider"
+import { providerFromModelRef } from "./provider"
 import type { BalanceStore } from "./store"
 
 /**
@@ -36,23 +36,21 @@ export function displayText(store: BalanceStore): string {
  * - 正常且有余额 → `success`
  * - 已连接但账户不可用 → `warning`
  * - 请求错误 → `error`
- * - 其它（加载中/未开始）→ `textMuted`
+ * - 其它（加载中/未开始）→ `text.muted`
  */
-function stateColor(api: TuiPluginApi, store: BalanceStore): RGBA {
-  if (store.status() === "ready" && store.data()?.is_available !== false) return api.theme.current.success
-  if (store.status() === "ready" && store.data()?.is_available === false) return api.theme.current.warning
-  if (store.status() === "error") return api.theme.current.error
-  return api.theme.current.textMuted
+function stateColor(ctx: Context, store: BalanceStore): RGBA {
+  const feedback = ctx.theme.text.feedback
+  if (store.status() === "ready" && store.data()?.is_available !== false) return feedback.success.base
+  if (store.status() === "ready" && store.data()?.is_available === false) return feedback.warning.base
+  if (store.status() === "error") return feedback.error.base
+  return ctx.theme.text.muted
 }
 
 /**
  * 当 `active()` 变为真时自动触发一次余额刷新。
  *
- * 这样可以在「组件挂载」或「provider 切换为 deepseek」的瞬间立即拉取，
- * 而不必等待 60s 定时器；并发刷新由 store 内部去重。
- *
- * @param store 余额 store。
- * @param active 当前是否命中目标 provider（响应式访问器）。
+ * 这样可以在「组件挂载」或「provider 切换为目标 provider」的瞬间立即拉取，
+ * 而不必等待定时器；并发刷新由 store 内部去重。
  */
 function useAutoRefresh(store: BalanceStore, active: Accessor<boolean>): void {
   createEffect(() => {
@@ -61,26 +59,23 @@ function useAutoRefresh(store: BalanceStore, active: Accessor<boolean>): void {
 }
 
 /**
- * 会话输入行右侧 / 新建会话模型行右侧共用的「余额 ¥xxx」文本行。
+ * 会话输入行 / home 模型行共用的「余额 ¥xxx」文本行。
  *
- * 实现注意事项（踩坑记录）：
- * 1. 响应式文本必须放在 `<text>` 中，不能放进 `<span>`：opentui 的 `<span>`
- *    是静态样式文本节点，向其中插入响应式字符串不会随信号更新。
- * 2. 显隐使用 opentui 的 `visible` 布尔属性，而不是 solid 的 `<Show>`；
- *    `<Show>` 在外部插件 + 宿主渲染器组合下会挂载组件但不显示内容。
- *
- * @param props.api   TUI 插件 API（用于读取主题）。
- * @param props.store 余额 store。
- * @param props.active 是否显示该行（响应式访问器）。
+ * 说明：响应式文本必须放在 `<text>` 中（不要放进 `<span>`）；显隐使用
+ * opentui 的 `visible` 属性而不是 solid 的 `<Show>`——这是 v1 踩过的坑，
+ * v2 沿用相同做法。
  */
-export function BalanceRow(props: { api: TuiPluginApi; store: BalanceStore; active: Accessor<boolean> }) {
-  const theme = () => props.api.theme.current
+export function BalanceRow(props: { ctx: Context; store: BalanceStore; active: Accessor<boolean> }) {
   const text = createMemo(() => displayText(props.store))
 
   return (
     <box visible={props.active()} flexDirection="row" gap={1}>
-      <text fg={theme().textMuted}>余额</text>
-      <text fg={stateColor(props.api, props.store)} wrapMode="none" onMouseDown={() => void props.store.refresh()}>
+      <text fg={props.ctx.theme.text.muted}>余额</text>
+      <text
+        fg={stateColor(props.ctx, props.store)}
+        wrapMode="none"
+        onMouseDown={() => void props.store.refresh()}
+      >
         {text()}
       </text>
     </box>
@@ -88,27 +83,27 @@ export function BalanceRow(props: { api: TuiPluginApi; store: BalanceStore; acti
 }
 
 /**
- * 侧边栏（`sidebar_content`）中的余额区块。
+ * 侧边栏（`sidebar.content`）中的余额区块。
  *
- * 通过 `order: 101` 渲染在内置 `Context`（order 100）区块的正下方。
  * 是否展示由「当前会话模型 provider」决定。
  */
 export function SidebarBalance(props: {
-  api: TuiPluginApi
+  ctx: Context
   store: BalanceStore
   sessionID: string
   provider: string
 }) {
-  const theme = () => props.api.theme.current
-  const active = createMemo(() => currentProviderID(props.api, props.sessionID) === props.provider)
+  const active = createMemo(
+    () => providerFromModelRef(props.ctx.data.session.get(props.sessionID)?.model) === props.provider,
+  )
   useAutoRefresh(props.store, active)
 
   return (
     <box visible={active()}>
-      <text fg={theme().text}>
+      <text fg={props.ctx.theme.text.base}>
         <b>余额</b>
       </text>
-      <text fg={stateColor(props.api, props.store)} onMouseDown={() => void props.store.refresh()}>
+      <text fg={stateColor(props.ctx, props.store)} onMouseDown={() => void props.store.refresh()}>
         {displayText(props.store)}
       </text>
     </box>
@@ -116,41 +111,42 @@ export function SidebarBalance(props: {
 }
 
 /**
- * 会话输入行右侧（`session_prompt_right`）的余额。
+ * 会话输入行右侧（`prompt.footer.status`）的余额。
  *
  * provider 判定优先使用会话自身的模型（`session.model.providerID`），
- * 其次回退到最近消息 / 全局默认模型。
+ * 会话不可用时回退到当前默认/选中模型。
  */
-export function SessionPromptBalance(props: {
-  api: TuiPluginApi
+export function SessionBalance(props: {
+  ctx: Context
   store: BalanceStore
-  sessionID: string
+  sessionID: string | undefined
   provider: string
+  selectedProvider: Accessor<string | undefined>
 }) {
-  const active = createMemo(() => currentProviderID(props.api, props.sessionID) === props.provider)
+  const active = createMemo(() => {
+    const sessionProvider = props.sessionID
+      ? providerFromModelRef(props.ctx.data.session.get(props.sessionID)?.model)
+      : undefined
+    return (sessionProvider ?? props.selectedProvider()) === props.provider
+  })
   useAutoRefresh(props.store, active)
 
-  return <BalanceRow api={props.api} store={props.store} active={active} />
+  return <BalanceRow ctx={props.ctx} store={props.store} active={active} />
 }
 
 /**
- * 新建会话界面（`home_prompt_right`）的余额。
+ * 新建会话界面（`home.footer.status`）的余额。
  *
- * home 没有会话，插件 API 也拿不到「当前选中的模型」，因此这里使用启发式：
- * 以 `model.json` 的 `recent[0]`（最近一次显式选择的模型）为主，`config.model` 兜底。
- *
- * @param props.selectedProvider 由 `model-store` 监听 `model.json` 得到的 provider 访问器。
+ * home 没有会话，使用 `ctx.client.model.default()` 得到的当前默认/选中模型。
  */
-export function HomePromptBalance(props: {
-  api: TuiPluginApi
+export function HomeBalance(props: {
+  ctx: Context
   store: BalanceStore
   provider: string
   selectedProvider: Accessor<string | undefined>
 }) {
-  const active = createMemo(
-    () => homeProviderID(props.selectedProvider(), props.api.state.config.model) === props.provider,
-  )
+  const active = createMemo(() => props.selectedProvider() === props.provider)
   useAutoRefresh(props.store, active)
 
-  return <BalanceRow api={props.api} store={props.store} active={active} />
+  return <BalanceRow ctx={props.ctx} store={props.store} active={active} />
 }

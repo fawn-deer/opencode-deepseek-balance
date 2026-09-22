@@ -1,122 +1,111 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPlugin, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
+import { Plugin } from "@opencode/plugin/tui"
+import { createSignal } from "solid-js"
 import { defaultAuthDirs, readApiKeyFromDirs } from "./auth"
 import { fetchBalance } from "./balance"
-import { createSelectedModelWatcher } from "./model-store"
 import { resolveOptions } from "./options"
-import { currentProviderID, homeProviderID } from "./provider"
+import { providerFromModelRef } from "./provider"
 import { createBalanceStore } from "./store"
-import { HomePromptBalance, SessionPromptBalance, SidebarBalance } from "./view"
+import { HomeBalance, SessionBalance, SidebarBalance } from "./view"
 
 /**
- * 插件入口。
+ * 插件入口（opencode v2 CLI 插件）。
  *
- * opencode 会在 TUI 启动时调用本函数（`tui(api, options, meta)`），
- * 这里完成：解析配置 → 组装依赖（余额 store、model.json 监听）→
- * 注册三个展示插槽 → 注册刷新定时器/事件 → 注册清理逻辑。
+ * opencode 在 TUI 启动时调用 `setup(context)`，这里完成：解析配置 →
+ * 组装依赖（余额 store、当前选中模型）→ 注册三个展示插槽 → 订阅事件/定时器
+ * → 返回清理函数。
  *
  * 展示位置：
- * - `sidebar_content`（order 101）：内置 `Context` 区块下方
- * - `session_prompt_right`：会话输入行右侧
- * - `home_prompt_right`：新建会话界面模型选择行右侧
+ * - `sidebar.content`：侧边栏内容区
+ * - `prompt.footer.status`：会话输入行底部状态行
+ * - `home.footer.status`：新建会话界面底部状态行
  */
-const tui: TuiPlugin = async (api, options) => {
-  const opts = resolveOptions(options)
-
-  // 账户级余额 store：key 解析、接口调用都在这里注入，组件只读它。
-  const store = createBalanceStore({
-    getKey: () => readApiKeyFromDirs(defaultAuthDirs(api.state.path.state), opts.provider),
-    getBalance: (key) => fetchBalance(key),
-  })
-
-  // 监听 model.json，用于在 home 界面感知“当前选中的模型”变化。
-  const selectedModel = createSelectedModelWatcher(api.state.path.state)
-
-  /** 当前路由对应的会话 ID（非会话路由返回 undefined）。 */
-  function activeSessionID(): string | undefined {
-    const route = api.route.current
-    if (route.name !== "session") return undefined
-    const params = route.params as { sessionID?: unknown } | undefined
-    return params && typeof params.sessionID === "string" ? params.sessionID : undefined
-  }
-
-  /**
-   * 当前是否应展示/刷新余额：
-   * - 会话路由：用会话模型判定；
-   * - 其它（home 等）：用 model.json 的启发式判定。
-   */
-  function isActive(): boolean {
-    const sessionID = activeSessionID()
-    if (sessionID) return currentProviderID(api, sessionID) === opts.provider
-    return homeProviderID(selectedModel.provider(), api.state.config.model) === opts.provider
-  }
-
-  // 周期性刷新：仅在命中目标 provider 时请求余额接口（不会对非 deepseek 会话发请求）。
-  const timer = setInterval(() => {
-    if (isActive()) void store.refresh()
-  }, opts.refreshMs)
-
-  // 会话空闲时（一轮回答结束、余额可能变化）刷新一次。
-  const unsubscribe = api.event.on("session.idle", () => {
-    if (isActive()) void store.refresh()
-  })
-
-  // 插件停用时清理定时器、事件订阅与文件监听。
-  api.lifecycle.onDispose(() => {
-    clearInterval(timer)
-    unsubscribe()
-    selectedModel.dispose()
-  })
-
-  // 侧边栏区块：order 101，紧跟在内置 Context（order 100）之后。
-  const sidebar: TuiSlotPlugin = {
-    order: 101,
-    slots: {
-      sidebar_content(_ctx, props) {
-        return <SidebarBalance api={api} store={store} sessionID={props.session_id} provider={opts.provider} />
-      },
-    },
-  }
-
-  // 会话输入行右侧余额。
-  const sessionPromptRight: TuiSlotPlugin = {
-    slots: {
-      session_prompt_right(_ctx, props) {
-        return <SessionPromptBalance api={api} store={store} sessionID={props.session_id} provider={opts.provider} />
-      },
-    },
-  }
-
-  // 新建会话界面（home）模型行右侧余额。
-  const homePromptRight: TuiSlotPlugin = {
-    slots: {
-      home_prompt_right() {
-        return (
-          <HomePromptBalance
-            api={api}
-            store={store}
-            provider={opts.provider}
-            selectedProvider={selectedModel.provider}
-          />
-        )
-      },
-    },
-  }
-
-  api.slots.register(sidebar)
-  api.slots.register(sessionPromptRight)
-  api.slots.register(homePromptRight)
-}
-
-/**
- * TUI 插件模块。
- *
- * `id` 用于插件启用状态与插槽归属（文件插件必须提供非空 id）；
- * 通过包方式安装时可省略，opencode 会回退使用包名。
- */
-const plugin: TuiPluginModule = {
+export default Plugin.define({
   id: "deepseek-balance",
-  tui,
-}
+  setup(ctx) {
+    const opts = resolveOptions(ctx.options)
 
-export default plugin
+    // 账户级余额 store：key 解析、接口调用都在这里注入，组件只读它。
+    const store = createBalanceStore({
+      getKey: () => readApiKeyFromDirs(defaultAuthDirs(), opts.provider),
+      getBalance: (key) => fetchBalance(key),
+    })
+
+    /**
+     * 当前默认/选中模型的 provider。
+     *
+     * home（新建会话）没有会话对象，用 `client.model.default()` 获取；
+     * 模型/凭据变化时通过事件刷新。
+     */
+    const [selectedProvider, setSelectedProvider] = createSignal<string | undefined>(undefined)
+    async function refreshSelectedProvider(): Promise<void> {
+      try {
+        const result = await ctx.client.model.default()
+        setSelectedProvider(providerFromModelRef(result.data))
+      } catch {
+        setSelectedProvider(undefined)
+      }
+    }
+    void refreshSelectedProvider()
+
+    /** 会话路由：会话模型优先，缺省回退到当前默认/选中模型。 */
+    function isActive(sessionID: string | undefined): boolean {
+      const sessionProvider = sessionID
+        ? providerFromModelRef(ctx.data.session.get(sessionID)?.model)
+        : undefined
+      return (sessionProvider ?? selectedProvider()) === opts.provider
+    }
+
+    // 模型 / 凭据变化时刷新默认模型 provider。
+    const unsubscribers = [
+      ctx.data.on("session.model.selected", () => void refreshSelectedProvider()),
+      ctx.data.on("model.updated", () => void refreshSelectedProvider()),
+      ctx.data.on("provider.updated", () => void refreshSelectedProvider()),
+      // 一轮回答结束、余额可能变化时刷新一次。
+      ctx.data.on("session.idle", (event) => {
+        if (isActive(event.data.sessionID)) void store.refresh()
+      }),
+    ]
+
+    // 周期性刷新：仅在命中目标 provider 时请求余额接口。
+    const timer = setInterval(() => {
+      const route = ctx.ui.router.current()
+      if (isActive(route.type === "session" ? route.sessionID : undefined)) void store.refresh()
+    }, opts.refreshMs)
+
+    // 三个展示插槽。
+    const unregisterSlots = [
+      ctx.ui.slot({
+        append: "sidebar.content",
+        render: (input) => (
+          <SidebarBalance ctx={ctx} store={store} sessionID={input.sessionID} provider={opts.provider} />
+        ),
+      }),
+      ctx.ui.slot({
+        append: "prompt.footer.status",
+        render: (input) => (
+          <SessionBalance
+            ctx={ctx}
+            store={store}
+            sessionID={input.sessionID}
+            provider={opts.provider}
+            selectedProvider={selectedProvider}
+          />
+        ),
+      }),
+      ctx.ui.slot({
+        append: "home.footer.status",
+        render: () => (
+          <HomeBalance ctx={ctx} store={store} provider={opts.provider} selectedProvider={selectedProvider} />
+        ),
+      }),
+    ]
+
+    // 插件停用时清理定时器、事件订阅与插槽。
+    return () => {
+      clearInterval(timer)
+      for (const unsubscribe of unsubscribers) unsubscribe()
+      for (const unregister of unregisterSlots) unregister()
+    }
+  },
+})

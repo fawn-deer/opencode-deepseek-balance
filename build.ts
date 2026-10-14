@@ -23,6 +23,8 @@ const result = await Bun.build({
     "@opentui/solid",
     "solid-js",
     "solid-js/store",
+    // Bun 内置模块：由 opencode 的 Bun 运行时提供，不能被打包。
+    "bun:sqlite",
   ],
 })
 

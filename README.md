@@ -14,7 +14,7 @@
 - **自动/手动刷新**：命中 provider 时挂载即刷新；模型选择（`session.model.selected`）、
   一轮回答结束（`session.idle`）、模型/凭据更新（`model.updated` / `provider.updated`）、
   每 60 秒（可配）定时刷新；点击余额可立即刷新。
-- **零侵入**：只读 opencode 的 `auth.json`；密钥不会写入日志，也不会发送到 DeepSeek 之外的地址。
+- **零侵入**：只读 opencode 的凭证数据库（`opencode.db`）；密钥不会写入日志，也不会发送到 DeepSeek 之外的地址。
 - **优雅降级**：缺少密钥显示 `no API key`，请求失败显示 `unavailable`，不会影响 opencode 正常运行。
 
 效果示例（会话输入行）：
@@ -28,13 +28,9 @@
 ## 前置要求
 
 - opencode **>= 2.0.4**（CLI 插件系统）。
-- 已配置 DeepSeek provider 与凭证，即 `auth.json` 中存在：
-
-  ```json
-  { "deepseek": { "type": "api", "key": "sk-..." } }
-  ```
-
-  通常通过 `opencode auth login` 写入。
+- 已配置 DeepSeek provider 与凭证。v2 把凭证存进数据目录下的 SQLite 数据库
+  （`opencode.db` 的 `credential` 表），通常通过 `opencode auth login` 写入。
+  插件只读取 `type === "key"`（API Key）的凭证，不会写入。
 
 ## 安装
 
@@ -113,15 +109,16 @@ opencode v2 会**自动发现**全局配置目录下的插件：
 
 ### 凭证读取
 
-`auth.json` 位于 opencode 的**数据目录**。插件按以下顺序查找，取第一个存在的密钥：
+opencode v2 把凭证写入**数据目录**下的 SQLite 数据库（`auth.json` 是 v1 遗留文件，
+v2 仅在一次性迁移时读取它，之后不再写入）。插件以**只读**方式打开：
 
 ```
-$XDG_DATA_HOME/opencode/auth.json          # 设置了 XDG_DATA_HOME 时
-~/.local/share/opencode/auth.json          # 默认
-~/.local/state/opencode/auth.json          # 回退
+$XDG_DATA_HOME/opencode/opencode.db        # 设置了 XDG_DATA_HOME 时
+~/.local/share/opencode/opencode.db        # 默认
 ```
 
-仅使用 `{ "type": "api", "key": "..." }` 形式的凭证；OAuth 等其它形式会被忽略。
+取自 `credential` 表中 `integration_id = <provider>` 且 `active = 1` 的最新一条，
+并仅接受 `value` 为 `{ "type": "key", "key": "..." }` 的凭证明文；OAuth 等其它形式会被忽略。
 
 ### 余额接口
 
@@ -173,7 +170,7 @@ src/
   tui.tsx           # 插件入口：setup、注册槽位、事件订阅与清理
   view.tsx          # Solid 组件（余额文本行、侧边栏区块等）
   options.ts        # 配置解析与默认值
-  auth.ts           # 从 auth.json 读取 API Key
+  credential-db.ts  # 从 opencode.db 的 credential 表读取 API Key
   balance.ts        # DeepSeek 余额接口客户端与响应校验
   format.ts         # 货币格式化
   provider.ts       # provider 纯解析函数
@@ -206,10 +203,10 @@ npm publish --access public   # scoped 包首次发布需要 --access public
 
 - **完全看不到余额**
   - 确认当前模型 provider 是 `deepseek`（非 deepseek 会隐藏）。
-  - 侧边栏槽位需要侧边栏可见（`cli.json` 的 `session.sidebar` 不为 `hide`）。
+  - 侧边栏槽位需要侧边栏可见（`cli.json` 的 `session.sidebar` 为 `auto`）。
   - 查看 `~/.local/share/opencode/log/opencode.log` 是否有插件加载报错。
 - **显示 `no API key`**
-  - 确认已 `opencode auth login` 且 `auth.json` 中存在 `deepseek` 条目（见上文路径）。
+  - 确认已 `opencode auth login` 且 `credential` 表中存在该 provider 的启用凭证（见上文路径）。
 - **显示 `unavailable`**
   - 多为网络问题或密钥无权限；可先在终端用
     `curl -H "Authorization: Bearer <key>" https://api.deepseek.com/user/balance` 验证。

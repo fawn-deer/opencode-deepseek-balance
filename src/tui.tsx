@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
-import { defaultAuthDirs, readApiKeyFromDirs } from "./auth"
+import { readApiKeyFromDb } from "./credential-db"
 import { fetchBalance } from "./balance"
 import { resolveOptions } from "./options"
 import { providerFromModelRef } from "./provider"
@@ -27,7 +27,7 @@ export default Plugin.define({
 
     // 账户级余额 store：key 解析、接口调用都在这里注入，组件只读它。
     const store = createBalanceStore({
-      getKey: () => readApiKeyFromDirs(defaultAuthDirs(), opts.provider),
+      getKey: () => readApiKeyFromDb(opts.provider),
       getBalance: (key) => fetchBalance(key),
     })
 
